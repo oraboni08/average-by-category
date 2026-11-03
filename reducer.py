@@ -1,35 +1,51 @@
 #!/usr/bin/env python3
-import redis
+"""Reducer: calcula promedio y desviación estándar por clave.
+
+Recibe la salida del mapper YA ORDENADA por `sort`, así que todas las líneas
+de una misma clave llegan seguidas. La clave puede tener una columna
+(categoría) o dos (categoría y subcategoría): siempre se toma el último campo
+como valor y lo anterior como clave.
+
+Para soportar grandes volúmenes no se guardan los valores: se usa el algoritmo
+de Welford, que actualiza la media y la varianza en una sola pasada con
+memoria constante y sin errores numéricos al sumar muchos datos.
+
+Desviación estándar poblacional: sqrt( sum((x - media)^2) / n )
+"""
 import math
+import sys
 
-r = redis.Redis(host='redis', port=6379, db=0, decode_responses=True)
+current_key = None
+count = 0
+mean = 0.0
+m2 = 0.0  # suma de los cuadrados de las diferencias con la media
 
-# Buscar todas las claves guardadas por el mapper
-keys = r.keys("category:*")
 
-if not keys:
-    print("⚠️ No se encontraron datos en Redis.")
-    sys.exit(0)
+def emit(key, count, mean, m2):
+    std_dev = math.sqrt(m2 / count)
+    print(f"{key}\t{mean:.2f}\t{std_dev:.2f}\t{count}")
 
-for key in sorted(keys):
-    category = key.split(":")[1]
-    # Obtener todos los valores acumulados en la lista de Redis
-    raw_values = r.lrange(key, 0, -1)
-    values = [float(v) for v in raw_values]
-    
-    count = len(values)
-    if count == 0:
+
+for line in sys.stdin:
+    line = line.rstrip("\n")
+    if not line:
         continue
-        
-    # Cálculo del Promedio
-    total = sum(values)
-    mean = total / count
-    
-    # Cálculo de la Desviación Estándar Poblacional
-    variance = sum((x - mean) ** 2 for x in values) / count
-    std_dev = math.sqrt(variance)
-    
-    print(f"Categoría: {category} | Promedio: {mean:.2f} | Desv. Estándar: {std_dev:.2f} | Muestras: {count}")
 
-# Opcional: Limpiar las claves de Redis procesadas
-r.flushdb()
+    key, value = line.rsplit("\t", 1)
+    value = float(value)
+
+    if key != current_key:
+        if current_key is not None:
+            emit(current_key, count, mean, m2)
+        current_key = key
+        count, mean, m2 = 0, 0.0, 0.0
+
+    # Actualización de Welford
+    count += 1
+    delta = value - mean
+    mean += delta / count
+    m2 += delta * (value - mean)
+
+# Emitir la última clave
+if current_key is not None:
+    emit(current_key, count, mean, m2)

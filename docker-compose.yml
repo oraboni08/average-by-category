@@ -1,14 +1,31 @@
-version: '3.8'
-
 services:
+  # Versión del laboratorio: mapper | sort | reducer (no necesita Redis)
+  mapreduce:
+    build: .
+    container_name: average-by-category
+    volumes:
+      - ./input:/app/input   # agregar CSV a input/ sin reconstruir la imagen
+
+  # ---------- Extra: integración con Redis ----------
   redis:
     image: redis:7-alpine
     container_name: redis-broker
     ports:
       - "6379:6379"
+    healthcheck:             # comprueba que Redis ya acepta conexiones
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 10
 
-  mapreduce:
+  mapreduce-redis:
     build: .
-    container_name: average-by-category
+    container_name: average-by-category-redis
+    command: sh run_redis.sh input
+    environment:
+      - REDIS_HOST=redis
+    volumes:
+      - ./input:/app/input
     depends_on:
-      - redis
+      redis:
+        condition: service_healthy   # no arranca hasta que Redis responda al ping
